@@ -1,0 +1,183 @@
+# Devops Test Task
+The following tasks should be performed within **1 day maximum** and are taken as a measure of base knowledge, speed of resolving and ability to work with deadlines.
+Correct configuration is more important than finishing all tasks.
+Please ensure that you provide visual evidence of your work through screen shots or videos.
+
+## Tasks to be performed:
+1. Build a small kubernetes cluster inside minikube
+2. Deploy grafana to the cluster
+3. Deploy prometheus to the cluster
+4. Deploy and configure a mysql instance in the cluster with persistent storage
+5. Enable logging slow logs
+6. Export slow logs as metrics to prometheus server using any of suitable tools, such as telegraf
+7. Setup alerting on top of exported metrics
+
+
+# Mandatory
+Everything must be versioned and deployed using helm charts.
+
+## Additional questions
+- What problems did you encounter? How did you solve them?
+I Faced issue with minikube and virtual box, after troubleshooting it was identified that Hyper-V needs to be disabled. Minikube, VirtualBox and Docker was installed and configured successfully. in MySQL when a PersistentVolumeClaim is created, a PersistentVolume is dynamically provisioned based on the StorageClass configuration
+
+- How would you setup backups for mysql in production?
+mysqldump --all-databases > dump-$( date '+%Y-%m-%d_%H-%M-%S' ).sql -u root -p
+after creating the moving it to secure location.
+- How would you setup failover of mysql for production in k8s? How many nodes?
+Server1:
+[mysqld]
+bind-address    = 192.168.0.1
+server_id           = 1
+log_bin             = /var/log/mysql/mysql-bin.log
+log_bin_index       = /var/log/mysql/mysql-bin.log.index
+relay_log           = /var/log/mysql/mysql-relay-bin
+relay_log_index     = /var/log/mysql/mysql-relay-bin.index
+expire_logs_days    = 10
+max_binlog_size     = 100M
+log_slave_updates   = 1
+auto-increment-increment = 2
+auto-increment-offset = 1
+Server2:
+[mysqld]
+bind-address    = 192.168.0.2
+server_id           = 2
+log_bin             = /var/log/mysql/mysql-bin.log
+log_bin_index       = /var/log/mysql/mysql-bin.log.index
+relay_log           = /var/log/mysql/mysql-relay-bin
+relay_log_index     = /var/log/mysql/mysql-relay-bin.index
+expire_logs_days    = 10
+max_binlog_size     = 100M
+log_slave_updates   = 1
+auto-increment-increment = 2
+auto-increment-offset = 2
+server1# systemctl restart mysql
+server1# netstat -ntlp
+Active Internet connections (only servers)
+Proto Recv-Q Send-Q Local Address           Foreign Address         State       PID/Program name    
+tcp        0      0 192.168.0.1:3306        0.0.0.0:*               LISTEN      9057/mysqld
+server2# systemctl restart mysql
+server2# netstat -ntlp
+Active Internet connections (only servers)
+Proto Recv-Q Send-Q Local Address           Foreign Address         State       PID/Program name    
+tcp        0      0 192.168.0.2:3306        0.0.0.0:*               LISTEN      8740/mysqld
+server1# mysql -u root -p
+MariaDB> GRANT REPLICATION SLAVE ON *.* TO 'replicauser'@'192.168.0.2' IDENTIFIED BY 'somestrongpassword';
+server2# mysql -u root -p
+MariaDB> GRANT REPLICATION SLAVE ON *.* TO 'replicauser'@'192.168.0.1' IDENTIFIED BY 'somestrongpassword';
+server1# mysql -u replicauser -p -h 192.168.0.2
+Enter password: somestrongpassword
+Welcome to the MariaDB monitor.  Commands end with ; or \g.
+
+server2# mysql -u replicauser -p -h 192.168.0.1
+Enter password: somestrongpassword
+Welcome to the MariaDB monitor.  Commands end with ; or \g.
+server1# mysql -u root -p
+MariaDB> SHOW MASTER STATUS;
++------------------+----------+--------------+------------------+
+| File             | Position | Binlog_Do_DB | Binlog_Ignore_DB |
++------------------+----------+--------------+------------------+
+| mysql-bin.000002 |      531 |              |                  |
++------------------+----------+--------------+------------------+
+1 row in set (0.00 sec)
+server2# mysql -u root -p
+MariaDB> STOP SLAVE;
+MariaDB> CHANGE MASTER TO master_host='192.168.0.1', master_port=3306, master_user='replicauser', master_password='somestrongpassword', master_log_file='mysql-bin.000002', master_log_pos=531;
+MariaDB> START SLAVE;
+server2# mysql -u root -p
+MariaDB> SHOW MASTER STATUS;
++------------------+----------+--------------+------------------+
+| File             | Position | Binlog_Do_DB | Binlog_Ignore_DB |
++------------------+----------+--------------+------------------+
+| mysql-bin.000002 |      531 |              |                  |
++------------------+----------+--------------+------------------+
+1 row in set (0.00 sec)
+server1# mysql -u root -p
+MariaDB> STOP SLAVE;
+MariaDB> CHANGE MASTER TO master_host='192.168.0.2', master_port=3306, master_user='replicauser', master_password='somestrongpassword', master_log_file='mysql-bin.000002', master_log_pos=531;
+MariaDB> START SLAVE;
+server1# mysql -u root -p
+MariaDB> CREATE DATABASE TESTDB;
+MariaDB> CREATE TABLE TESTDB.REPLICA (`id` varchar(40));
+server2# mysql -u root -p
+MariaDB> SHOW TABLES IN TESTDB;
++------------------+
+| Tables_in_TESTDB |
++------------------+
+| REPLICA          |
++------------------+
+1 roserver1# mysql -u root -p
+MariaDB> CREATE USER 'haproxy_check'@'%';
+MariaDB> FLUSH PRIVILEGES;
+w in set (0.00 sec)
+server1# mysql -u root -p -e "SELECT User, Host FROM mysql.user"
+Enter password: 
++---------------+-------------+
+| User          | Host        |
++---------------+-------------+
+| haproxy_check | %           |
+| replicauser   | 192.168.0.2 |
+| root          | localhost   |
++---------------+-------------+
+server2# mysql -u root -p -e "SELECT User, Host FROM mysql.user"
+Enter password: 
++---------------+-------------+
+| User          | Host        |
++---------------+-------------+
+| haproxy_check | %           |
+| replicauser   | 192.168.0.1 |
+| root          | localhost   |
++---------------+-------------+
+server1# mysql -u root -p
+MariaDB> CREATE USER 'haproxy_root'@'%' IDENTIFIED BY 'password';
+MariaDB> GRANT ALL PRIVILEGES ON *.* TO 'haproxy_root'@'%';
+
+server1# apt-get install haproxy
+server2# apt-get install haproxy
+server1# mv /etc/haproxy/haproxy.cfg{,.back}
+server1# vi /etc/haproxy/haproxy.cfg
+global
+    user haproxy
+    group haproxy
+defaults
+    mode http
+    log global
+    retries 2
+    timeout connect 3000ms
+    timeout server 5000ms
+    timeout client 5000ms
+listen stats
+    bind 10.10.10.1:9999
+    stats enable
+    stats hide-version
+    stats uri /stats
+    stats auth statadmin:statadminpass
+listen mysql-cluster
+    bind 10.10.10.1:3306
+    mode tcp
+    option mysql-check user haproxy_check
+    balance roundrobin
+    server mysql-1 192.168.0.1:3306 check
+    server mysql-2 192.168.0.2:3306 check
+server1# vi /etc/sysctl.conf
+net.ipv4.ip_nonlocal_bind=1
+server2# vi /etc/sysctl.conf
+net.ipv4.ip_nonlocal_bind=1
+sysctl -p
+server1# systemctl start haproxy
+server2# systemctl start haproxy
+server1# netstat -ntlp 
+Active Internet connections (only servers) 
+Proto Recv-Q Send-Q Local Address Foreign Address State PID/Program name 
+tcp 0 0 192.168.0.1:3306 0.0.0.0:* LISTEN 918/mysqld 
+tcp 0 0 10.10.10.1:3306 0.0.0.0:* LISTEN 802/haproxy 
+tcp 0 0 10.10.10.1:9999 0.0.0.0:* LISTEN 802/haproxy 
+tcp 0 0 10.10.10.2:22 0.0.0.0:* LISTEN 785/sshd
+server2# netstat -ntlp
+Active Internet connections (only servers) 
+Proto Recv-Q Send-Q Local Address Foreign Address State PID/Program name 
+tcp 0 0 192.168.0.2:3306 0.0.0.0:* LISTEN 918/mysqld 
+tcp 0 0 10.10.10.1:3306 0.0.0.0:* LISTEN 802/haproxy 
+tcp 0 0 10.10.10.1:9999 0.0.0.0:* LISTEN 802/haproxy 
+tcp 0 0 10.10.10.3:22 0.0.0.0:* LISTEN 785/sshd
+
+Good luck!
